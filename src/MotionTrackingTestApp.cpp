@@ -19,6 +19,7 @@ class MotionTrackingTestApp : public AppNative {
     void onColor( openni::VideoFrameRef frame, const OpenNI::DeviceOptions& deviceOptions );
     vector< Shape > getEvaluationSet( vector< vector<cv::Point> > rawContours, int minimalArea, int maxArea );
     Shape* findNearestMatch( Shape trackedShape, vector< Shape > &shapes, float maximumDistance  );
+    cv::Mat removeBlack( cv::Mat input, short nearLimit, short farLimit );
 	void update();
 	void draw();
     
@@ -38,6 +39,8 @@ class MotionTrackingTestApp : public AppNative {
     params::InterfaceGlRef mParams;
     double mThresh;
     double mMaxVal;
+    short mNearLimit;
+    short mFarLimit;
   private:
     typedef vector< vector<cv::Point > > ContourVector;
     ContourVector mContours;
@@ -75,14 +78,16 @@ void MotionTrackingTestApp::setup(){
         }
     }
     
-    mThresh = 75.0;
+    mThresh = 0.0;
     mMaxVal = 255.0;
+    mNearLimit = 30;
+    mFarLimit = 4000;
     
     mParams = params::InterfaceGl::create("Threshold", Vec2i( 255, 200 ) );
     mParams->addParam("Thresh", &mThresh, "min=0.0f max=255.0f step=1.0 keyIncr=a keyDecr=s");
     mParams->addParam("Maxval", &mMaxVal, "min=0.0f max=255.0f step=1.0 keyIncr=q keyDecr=w");
-    mParams->addParam( "Threshold Step Size", &mStepSize, "min=1 max=255" );
-    mParams->addParam( "CV Blur amount", &mBlurAmount, "min=3 max=55" );
+    //mParams->addParam( "Black near", &mNearLimit, "min=10 max=100 step=1 keyIncr=t keyDecr=y" );
+//    mParams->addParam( "Black far", &mFarLimit, "min=200 max=1000 step=1 keyIncr=g keyDecr=h" );
     mStepSize = 10;
     mBlurAmount = 10;
 }
@@ -94,24 +99,37 @@ void MotionTrackingTestApp::prepareSettings( Settings* settings ){
 
 void MotionTrackingTestApp::keyDown( KeyEvent event ){
     mPreviousFrame.copyTo( mBackground );
+    mBackground = removeBlack( mBackground, mNearLimit, mFarLimit );
 }
 
 void MotionTrackingTestApp::onDepth( openni::VideoFrameRef frame, const OpenNI::DeviceOptions& deviceOptions){
     mInput = toOcv( OpenNI::toChannel16u( frame ) );
+    
+    // take mInput, iterate through pixels
+    // if its black, set to color
+    // if depth is less tan 10ish, set to 300
+    
+    cv::Mat withoutBlack;
+    //cv::Mat gray8Bit;
+    //mInput.convertTo( gray8Bit, CV_8UC3, 0.1/1.0  );
+    
+    withoutBlack = removeBlack( mInput, mNearLimit, mFarLimit );
+    //cv::invert(withoutBlack, withoutBlack);
     
     cv::Mat mSubtracted;
     cv::Mat blur;
     cv::Mat eightBit;
     cv::Mat thresh;
 
-   cv::blur( mInput, blur, cv::Size( mBlurAmount, mBlurAmount ) );
-   cv::absdiff(mBackground, blur, mSubtracted);
+    cv::absdiff( mBackground, withoutBlack, mSubtracted );
     
     // convert to RGB color space, with some compensation
-    mSubtracted.convertTo( eightBit, CV_8UC3, 0.1/1.0  );
+    withoutBlack.convertTo( eightBit, CV_8UC3, 0.1/1.0  );
+    cv::bitwise_not(eightBit, eightBit);
     
     mContours.clear();
     cv::threshold( eightBit, thresh, mThresh, mMaxVal, CV_8U );
+    cv::blur( thresh, blur, cv::Size( mBlurAmount, mBlurAmount ) );
     cv::findContours( thresh, mContours, mHierarchy, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_SIMPLE );
     
     // get data that we can later compare
@@ -126,7 +144,6 @@ void MotionTrackingTestApp::onDepth( openni::VideoFrameRef frame, const OpenNI::
             // update our tracked contour
             // last frame seen
             nearestShape->matchFound = true;
-//            std::cout << "Found match to shape ID: " << mTrackedShapes[i].ID << std::endl;
             mTrackedShapes[i].centroid = nearestShape->centroid;
             mTrackedShapes[i].lastFrameSeen = ci::app::getElapsedFrames();
             mTrackedShapes[i].hull.clear();
@@ -155,9 +172,12 @@ void MotionTrackingTestApp::onDepth( openni::VideoFrameRef frame, const OpenNI::
             ++it;
         }
     }
-
-    mSurfaceDepth = Surface8u( fromOcv( mInput  ) );
-    mSurfaceBlur = Surface8u( fromOcv( blur ) );
+    
+    cv::Mat gray8Bit;
+    withoutBlack.convertTo( gray8Bit, CV_8UC3, 0.1/1.0  );
+    
+    mSurfaceDepth = Surface8u( fromOcv( gray8Bit  ) );
+    mSurfaceBlur = Surface8u( fromOcv( withoutBlack ) );
     mSurfaceSubtract = Surface8u( fromOcv( eightBit ) );
     
     mInput.copyTo( mPreviousFrame );
@@ -226,6 +246,34 @@ Shape* MotionTrackingTestApp::findNearestMatch( Shape trackedShape, vector< Shap
         }
     }
     return closestShape;
+}
+
+cv::Mat MotionTrackingTestApp::removeBlack( cv::Mat input, short nearLimit, short farLimit )
+{
+    int counter = 0;
+    /*
+    ci::app::console() << "rows are: " << input.rows << endl;
+    ci::app::console() << "cols are: " << input.cols << endl;
+    ci::app::console() << "size is: " << input.size() << endl;
+    */
+    
+    for( int y=0; y<input.rows; y++ ){
+        for( int x=0; x<input.cols; x++ ){
+//            short color = input.at<int>(y,x);
+  //          std::cout << "color " << color << std::endl;
+            if( input.at<short>(y,x) < nearLimit || input.at<short>(y,x) > farLimit){
+//
+//                std::cout << "row " << i << std::endl;
+//                std::cout << "row " << i << std::endl;
+//                std::cout << "color before " << color << std::endl;
+//                counter++;
+                input.at<short>(y,x) = 4000;
+//                std::cout << "color after " << input.at<short>(y,x) << std::endl;
+            }
+        }
+    }
+//    console() << "counter " << counter << endl;
+    return input;
 }
 
 void MotionTrackingTestApp::update()
